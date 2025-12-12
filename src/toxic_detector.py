@@ -1,174 +1,180 @@
 import os
-import json
-import re
-# from dotenv import load_dotenv
-# from langchain_google_genai import ChatGoogleGenerativeAI (염준화)
-from llm_service import LLM_gemini
-
-# [추가] 실행을 위한 필수 라이브러리 및 임시 클래스 정의
-# ---------------------------------------------------------------------------
-# 1. RAG 파이프라인이 아직 없거나 에러가 날 경우를 대비한 안전 장치
-try:
-    from .rag_pipeline import search_precedents
-except ImportError:
-    def search_precedents(text, k=1): return ["(판례 검색 모듈이 아직 구현되지 않음)"]
-
-# 2. DeepEval 인터페이스 호환을 위한 Gemini Wrapper
-# llm_service의 LLM_gemini로 통합 (염준화)
-
-# class GeminiWrapper:
-#     def __init__(self):
-#         load_dotenv()
-#         api_key = os.getenv("GEMINI_API_KEY")
-#         self.llm = ChatGoogleGenerativeAI(
-#             model="gemini-2.5-flash",
-#             temperature=0.0,
-#             google_api_key=api_key
-#         )
-    
-#     def generate(self, prompt):
-#         return self.llm.invoke(prompt).content
-
-# 3. LawManager가 구현되지 않았을 때를 위한 Mock Class
-class MockLawManager:
-    def initialize_database(self):
-        pass # 실제 DB 연결 로직이 들어갈 곳
-    
-    def search_relevent_laws(self, text, k=2):
-        # 원본 코드의 오타(relevent)를 그대로 지원하기 위한 메서드
-        return ["근로기준법 제20조 (위약 예정의 금지): 사용자는 근로계약 불이행에 대한 위약금 또는 손해배상액을 예정하는 계약을 체결하지 못한다."]
-# ---------------------------------------------------------------------------
-
+from dotenv import load_dotenv
+from deepeval.metrics import GEval
+from deepeval.test_case import LLMTestCase, LLMTestCaseParams
+from deepeval.models.base_model import DeepEvalBaseLLM
 from deepeval.metrics.g_eval import Rubric
-# from .rag_pipeline import search_precedents (상단 try-except로 이동하여 처리함)
 
-class ToxicClauseDetector():
-    # 사용자 gemini_api를 가져올 수 있게 수정(염준화)
-    def __init__(self,gemini_api):
-        # 독소조항 판병하는 llm 모델, DeepEval용 Wrapper 써야함
-        # 
-        self.evaluator_llm = LLM_gemini(gemini_api,"gemini-2.5-flash")
-        
-        # 법령 정보를 관리하는 인스턴스, DB 초기화 및 법령 검색 기능
-        self.law_manager = MockLawManager()
-        self.law_manager.initialize_database()
-        
-        # 독소조항 판별에 쓰일 평가기준
-        self.toxic_criteria = """
-        1. 법적 효력 (Legality): 근로기준법 등 강행법규를 위반하는가?
-        2. 공정성 (Fairness): 사용자에게만 유리하고 근로자에게 과도한 의무를 부과하는가?
-        3. 명확성 (Clarity): 자의적 해석이 가능한 모호한 표현이 있는가?
+# [Import] 1. 사용자가 정의한 LLM 서비스
+from src.llm_service import LLM_gemini
+
+# [Import] 2. 법령 및 판례 DB 매니저
+# (경로 오류 방지를 위해 정확한 위치에서 import)
+from src.law.legal_context import LawContextManager
+from src.law.precedent_context import PrecedentContextManager
+
+load_dotenv()
+
+# --- 1. DeepEval용 Gemini 어댑터 (Adapter) ---
+class GeminiDeepEvalAdapter(DeepEvalBaseLLM):
+    """
+    'LLM_gemini' 클래스를 'DeepEval' 라이브러리가 이해할 수 있는 형태로
+    변환해주는 연결 고리(Adapter) 클래스입니다.
+    """
+    def __init__(self, llm_service: LLM_gemini):
+        # 이미 생성된 LLM_gemini 인스턴스를 받아서 저장합니다.
+        self.llm_service = llm_service
+        self.model_name = llm_service.model_name
+
+    def load_model(self):
+        # DeepEval이 모델 객체를 요청할 때 client를 반환
+        return self.llm_service.client
+
+    def generate(self, prompt: str) -> str:
         """
+        DeepEval이 평가를 위해 텍스트 생성을 요청할 때 호출되는 함수
+        """
+        # 1. llm_service의 generate 함수 호출 (Response 객체 반환됨)
+        response = self.llm_service.generate(prompt)
         
-        # 독소조항 판별에 쓰일 rubric
+        # 2. Response 객체에서 텍스트(.text)만 추출하여 문자열로 반환
+        return response.text
+
+    async def a_generate(self, prompt: str) -> str:
+        # 비동기 호출 시에도 동기 함수를 그대로 사용 (Gemini Python SDK 특성)
+        return self.generate(prompt)
+
+    def get_model_name(self):
+        return self.model_name
+
+# --- 2. 독소조항 판별기 클래스 ---
+class ToxicClauseDetector:
+    def __init__(self, gemini_api: str = None):
+        print("🛡️ ToxicClauseDetector 및 DB 초기화 중...")
+        
+        # 1. LLM 서비스 초기화
+        api_key = os.getenv("GEMINI_API_KEY")
+        # 평가의 정확도를 위해 가급적 'pro' 모델 사용 권장
+        # llm_service.py의 LLM_gemini 클래스 사용
+        self.llm_service = LLM_gemini(gemini_api_key=api_key, model="gemini-2.5-flash")
+        
+        # 2. 어댑터 연결 (DeepEval 평가용)
+        self.evaluator_llm = GeminiDeepEvalAdapter(self.llm_service)
+        
+        # 3. DB 매니저 초기화
+        self.law_manager = LawContextManager()
+        self.precedent_manager = PrecedentContextManager()
+        
+        # DB 로드 (최초 실행 시에만 로딩/구축)
+        self.law_manager.initialize_database()
+        self.precedent_manager.initialize_database()
+
+        # 4. G-Eval 평가 기준 (Rubric) 정의
+        self.toxic_criteria = """
+        당신은 한국의 근로기준법을 수호하는 엄격한 '근로계약서 감사관'입니다.
+        입력된 '근로계약 조항'이 제공된 '관련 법령/판례(Context)'에 비추어 볼 때 
+        근로자에게 불리하거나, 불법적이거나, 독소조항(Toxic Clause)에 해당하는지 평가하세요.
+
+        [독소조항 판단 기준]
+        1. 강행규정 위반: 최저임금 미달, 퇴직금 포기 각서, 위약금 예정 등 법으로 금지된 내용인가?
+        2. 포괄임금 오남용: 근로시간 산정이 가능한데도 포괄임금제를 적용하여 수당을 미지급하려 하는가?
+        3. 불공정성: '갑'에게 일방적으로 유리하거나, 모호한 표현으로 '을'의 권리를 제한하는가?
+        4. 절차 무시: 해고, 징계 등의 절차를 법적 기준보다 간소화하거나 생략하는가?
+        """
+
+        # 점수가 높을수록 '안전(Safe)'한 것으로 설정
         self.rubric = [
-            "0점: 법적, 윤리적으로 완벽하게 안전함",
-            "50점: 근로자에게 불리하거나 다소 모호하여 주의가 필요함",
-            "100점: 근로기준법 위반 소지가 높거나 명백한 독소조항임"
-        ]
-        
-        # 독소조항 판별에 쓰일 CoT
-        self.evalutation_step = [
-            "입력된 조항과 검색된 법령/판례를 비교 분석한다.",
-            "평가 기준(법적 효력, 공정성, 명확성)에 따라 위반 요소를 식별한다.",
-            "위반 정도에 따라 루브릭 점수를 산정한다.",
-            "최종 결과를 JSON 포맷으로 생성한다."
+            Rubric(score_range=(0,2), expected_outcome="법적 효력이 없거나 근로자에게 심각하게 불리한 독소조항."),
+            Rubric(score_range=(3,5), expected_outcome="다툼의 여지가 있거나 근로자에게 불리하게 해석될 수 있는 조항."),
+            Rubric(score_range=(6,7), expected_outcome="대체로 공정하지만 일부 표현이 모호한 조항."),
+            Rubric(score_range=(8,10), expected_outcome="관련 법령과 판례를 완벽히 준수하는 안전한 조항."),
         ]
 
-    # 법령 및 판례 검색하는 함수
+        self.evaluation_steps = [
+            "입력된 '계약 조항'의 핵심 내용을 파악한다.",
+            "제공된 'Context(법령/판례)'와 조항을 대조하여 법적 최저 기준(Minimum Standard) 준수 여부를 확인한다.",
+            "조항에 '위약금', '포기', '민형사상 이의 제기 금지' 등 불법적 키워드가 포함되었는지 확인한다.",
+            "법 위반 사항이 있으면 낮은 점수(위험)를, 준수했다면 높은 점수(안전)를 부여한다."
+        ]
+
     def _retrieve_context(self, clause_text):
+        """
+        법령과 판례를 DB에서 검색하여 프롬프트용 문자열로 반환
+        """
         # 1. 법령 검색
-        laws = self.law_manager.search_relevent_laws(clause_text, k = 2)
+        laws = self.law_manager.search_relevant_laws(clause_text, k=2)
         law_text = "\n".join(laws) if laws else "관련 법령 없음"
 
         # 2. 판례 검색
-        precedents = search_precedents(clause_text, k = 1)
+        precedents = self.precedent_manager.search_relevant_precedents(clause_text, k=1)
         precedent_text = precedents[0] if precedents else "관련 판례 없음"
 
-        return f"[관련 법령]\n{law_text}\n\n[관련 판례]\n{precedent_text}"
-    
-    # DeepEval 라이브러리를 써서 독소조항 여부를 판별하는 함수
+        return f"=== [관련 법령] ===\n{law_text}\n\n=== [관련 판례] ===\n{precedent_text}"
+
     def detect(self, clause_text):
-        # Context 검색
-        context = self._retrieve_context(clause_text)
-        
-        # 프롬프트 구성
-        prompt = f"""
-        당신은 전문 법률 AI입니다. 아래 정보를 바탕으로 근로계약서 조항을 분석하세요.
-
-        [평가 단계]
-        {chr(10).join(self.evalutation_step)}
-
-        [평가 기준]
-        {self.toxic_criteria}
-
-        [채점 루브릭]
-        {chr(10).join(self.rubric)}
-
-        [입력 조항]
-        "{clause_text}"
-
-        [참고 법령 및 판례]
-        {context}
-
-        [출력 형식]
-        오직 JSON 형식으로만 응답하세요:
-        {{
-            "is_toxic": true (점수가 50점 이상이면 true),
-            "risk_score": 0~100 정수,
-            "reason": "판단 근거 한 줄 요약",
-            "suggestion": "수정 제안 (문제가 없으면 '수정 불필요')"
-        }}
         """
+        조항을 분석하여 독소조항 여부, 위험 점수, 근거를 반환합니다.
+        """
+        print(f"🕵️ 조항 분석 중: {clause_text[:30]}...")
+        
+        # 1. DB 검색 (Retrieval)
+        retrieved_context = self._retrieve_context(clause_text)
+        
+        # 2. G-Eval 평가 (Metric 생성)
+        toxic_metric = GEval(
+            name="Contract Safety Score",
+            criteria=self.toxic_criteria,
+            rubric=self.rubric,
+            evaluation_steps=self.evaluation_steps,
+            model=self.evaluator_llm, # 어댑터 사용
+            threshold=0.6, 
+            evaluation_params=[LLMTestCaseParams.INPUT, LLMTestCaseParams.RETRIEVAL_CONTEXT]
+        )
 
-        try:
-            # LLM 호출
-            response_text = self.evaluator_llm.generate(prompt)
-            
-            # JSON 파싱 (Markdown 코드 블록 제거 처리)
-            cleaned_text = re.sub(r'```json|```', '', response_text).strip()
-            result = json.loads(cleaned_text)
-            
-            # 반환값 구성
-            is_toxic = result.get("is_toxic", False)
-            risk_score = result.get("risk_score", 0)
-            reason = result.get("reason", "분석 불가")
-            retrieved_context = context
+        # 3. Test Case 생성
+        test_case = LLMTestCase(
+            input=clause_text,
+            actual_output="평가 대상입니다.", # G-Eval Output 불필요
+            retrieval_context=[retrieved_context]
+        )
 
-            return {
-                "clause": clause_text,
-                "is_toxic": is_toxic,
-                "risk_score": risk_score, # 메인 UI 호환용 추가
-                "reason": reason,
-                "suggestion": result.get("suggestion", ""), # 메인 UI 호환용 추가
-                "context_used": retrieved_context
-            }
-            
-        except Exception as e:
-            # 에러 발생 시 기본값 반환
-            return {
-                "clause": clause_text,
-                "is_toxic": False,
-                "risk_score": 0,
-                "reason": f"AI 분석 중 오류 발생: {str(e)}",
-                "suggestion": "다시 시도해주세요.",
-                "context_used": context
-            }
-    
-    # 
+        # 4. 측정 실행
+        toxic_metric.measure(test_case)
+        
+        # 5. 결과 해석 (Safety Score -> Risk Score 변환)
+        # G-Eval 점수(0~1)는 '안전도'를 의미하므로, '위험도'는 (1 - 점수)로 계산
+        safety_score = toxic_metric.score
+        risk_score = 1.0 - safety_score
+        
+        # 위험도가 0.4(40%)를 초과하면 독소조항으로 판단
+        is_toxic = risk_score > 0.4 
+        
+        return {
+            "clause": clause_text,
+            "is_toxic": is_toxic,
+            "risk_score": round(risk_score * 10, 1), # 10점 만점 환산
+            "reason": toxic_metric.reason,
+            "context_used": retrieved_context
+        }
+
     def generate_easy_suggestion(self, detection_result):
-        if not detection_result.get('is_toxic'):
-            return "✅ 법적으로 문제가 없는 안전한 조항입니다."
+        """
+        판별 결과를 바탕으로 '쉬운 해석'과 '수정 제안'을 생성합니다. (Generator)
+        """
+        if not detection_result['is_toxic']:
+            return "✅ 법적으로 문제없는 안전한 조항입니다."
 
         prompt = f"""
-        다음은 근로계약서 독소조항에 대한 분석 결과입니다.
-        근로자가 이해하기 쉽게 1~2문장으로 '왜 위험한지' 설명하고,
-        어떻게 고쳐야 하는지 친절하게 알려주세요.
-
-        [분석 결과]
-        {detection_result.get('reason')}
+        당신은 근로자 편인 법률 전문가입니다.
+        아래 조항이 '독소조항'으로 판별되었습니다.
         
-        [수정 제안]
-        {detection_result.get('suggestion')}
+        [원문 조항]: {detection_result['clause']}
+        [위험 판단 근거]: {detection_result['reason']}
+        [참고 법령/판례]: {detection_result['context_used']}
+
+        다음 두 가지를 마크다운 형식으로 작성해주세요:
+        1. **쉬운 해석**: 이 조항이 왜 위험한지 초등학생도 알기 쉽게 설명 (2문장 이내)
+        2. **수정 제안**: 근로자에게 유리하거나 법에 맞게 수정한 조항 예시
         """
+        
         return self.evaluator_llm.generate(prompt)
