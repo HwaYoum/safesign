@@ -5,10 +5,10 @@ import os
 from dotenv import load_dotenv
 
 # [Import]
-from src.toxic_detector import ToxicClauseDetector
-from src.llm_service import LLM_gemini
-from src.law.legal_context import LawContextManager
-from src.law.precedent_context import PrecedentContextManager
+from toxic_detector import ToxicClauseDetector
+from llm_service import LLM_gemini
+from law.legal_context import LawContextManager
+from law.precedent_context import PrecedentContextManager
 
 load_dotenv()
 

@@ -88,7 +88,7 @@ async def analyze_contract(request: AnalyzeRequest):
     # 제너레이터 함수: 데이터를 조금씩 나누어 보냅니다.
     async def event_stream():
         try:
-            detector = ToxicClauseDetector(gemini_api=request.api_key)
+            detector = ToxicClauseDetector(api_key=request.api_key)
             results = []
             chunks  = parse_text_to_chunks(request.text)
 
