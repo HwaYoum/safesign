@@ -239,4 +239,4 @@ yarn-debug.log*
 yarn-error.log*
 
 # 6. 개인용 테스트 파일
-tests\apiTest
+tests/apiTest
