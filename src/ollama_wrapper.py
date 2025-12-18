@@ -1,4 +1,8 @@
 import ollama
+# Copyright (c) 2025 SafeSign
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
+from langchain_community.llms import Ollama
 from deepeval.models.base_model import DeepEvalBaseLLM
 
 class OllamaDeepEvalWrapper(DeepEvalBaseLLM):
