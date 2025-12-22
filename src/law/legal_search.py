@@ -66,39 +66,51 @@ def get_law_content_xml(law_id):
         return None
 
 def parse_articles_from_xml(xml_content):
-    """
-    raw XML content를 받아 조항별 텍스트로 파싱하여 리스트로 반환합니다.
-    """
     if xml_content is None:
         return []
     
     parsed_articles = []
-    
     try:
         root = ET.fromstring(xml_content) 
         
         for unit in root.findall(".//조문단위"):
-            if unit.find("조문여부") is not None and unit.find("조문여부").text != "조문":
+            # 조문이 아닌 경우(예: 부칙 등) 제외
+            is_article = unit.find("조문여부")
+            if is_article is not None and is_article.text != "조문":
                 continue
                 
-            text_buffer = []
-            for elem in unit.iter():
-                if elem.text and elem.text.strip():
-                    tag = elem.tag
-                    text = elem.text.strip()
-                    
-                    if tag == "조문내용": text_buffer.append(text)
-                    elif tag in ["항번호", "호번호", "목번호"]: text_buffer.append(f"\n  {text}") 
-                    else: text_buffer.append(f" {text}")
-            
-            full_text = "".join(text_buffer).strip()
-            
-            if full_text:
-                parsed_articles.append(full_text)
+            # '조문내용' 태그에 이미 항/호 번호가 포함된 전체 텍스트가 들어있는 경우가 많음
+            article_content = unit.find("조문내용")
+            if article_content is not None and article_content.text:
+                full_text = article_content.text.strip()
                 
-    except ET.ParseError:
-        print("⚠️ XML 파싱 실패: 응답 내용이 유효한 XML이 아닙니다.")
+                # 항(Paragraph) 정보가 별도로 나뉘어 있는 경우를 위해 항들을 순회
+                paragraphs = []
+                for hang in unit.findall(".//항"):
+                    hang_text = ""
+                    # 항내용 가져오기
+                    content_elem = hang.find("항내용")
+                    if content_elem is not None and content_elem.text:
+                        hang_text = content_elem.text.strip()
+                    
+                    # 호(Item) 정보가 있다면 추가
+                    for ho in hang.findall(".//호"):
+                        ho_content = ho.find("호내용")
+                        if ho_content is not None and ho_content.text:
+                            hang_text += f"\n  {ho_content.text.strip()}"
+                    
+                    if hang_text:
+                        paragraphs.append(hang_text)
+                
+                # 만약 세부 항/호 정보가 추출되었다면 그것을 사용, 아니면 조문내용 통째로 사용
+                if paragraphs:
+                    result_text = full_text + "\n" + "\n".join(paragraphs)
+                else:
+                    result_text = full_text
+                    
+                parsed_articles.append(result_text)
+                
     except Exception as e:
-        print(f"⚠️ XML 파싱 중 일반 오류: {e}")
+        print(f"⚠️ XML 파싱 오류: {e}")
         
     return parsed_articles
