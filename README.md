@@ -1,4 +1,4 @@
-# safesign
+
 # 개요
 
 **목적**
@@ -23,6 +23,27 @@
 - pip install -r requirements.txt
 - fastapi dev src/fast_api.py
 
+# 사용 방법
+- 계약서 PDF 업로드
+<img width="500" height="300" alt="image" src="https://github.com/user-attachments/assets/f507a0da-a045-491e-8af4-dfadcd887e9c" />
+
+- 계약서 텍스트 확인 및 분석 시작
+<img width="500" height="300" alt="image" src="https://github.com/user-attachments/assets/5add8dad-01cb-4623-b1e2-96b004834110" />
+
+- 분석 결과 확인
+<img width="500" height="300" alt="스크린샷 2025-12-22 204626" src="https://github.com/user-attachments/assets/3ed37564-88ec-48e1-944c-9a0aad7a0122" />
+
+
+# 주요 기능
+- 계약서 업로드 및 전처리: PDF 및 이미지 형태의 계약서를 드래그 앤 드롭으로 입력받아 텍스트를 정밀 추출하고, 사용자가 이를 검수할 수 있는 편집 환경을 제공한다.
+
+- 법률 RAG 시스템 구축: 법제처 API를 통해 수집한 최신 법령과 판례 데이터를 청킹 및 FAISS 벡터 DB로 인덱싱하여 검색 정확도를 확보한다.
+
+- AI 기반 독소조항 심층 분석: DeepEval 프레임워크와 병렬 처리 기술을 적용하여 계약 조항의 불공정성을 고속으로 진단한다.
+
+- 위험도 시각화 대시보드: 계약서 전체의 안전 점수와 위험 등급을 게이지 차트로 시각화하고, 실시간 분석 진행률을 통해 사용자 대기 경험을 개선한다.
+
+- 상세 리포트 및 솔루션 제안: 원문과 분석 결과를 2단 비교 레이아웃으로 제공하며, 법적 리스크를 해소한 구체적인 수정 조항과 쉬운 용어 해설을 솔루션으로 제시한다.
   
 ## 📄 License
 
